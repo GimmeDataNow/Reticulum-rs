@@ -97,7 +97,7 @@ pub struct InterfaceContext<T: Interface> {
 
 pub struct InterfaceManager {
     counter: usize,
-    rx_recv: Arc<tokio::sync::Mutex<InterfaceRxReceiver>>,
+    rx_recv: Option<InterfaceRxReceiver>,
     rx_send: InterfaceRxSender,
     cancel: CancellationToken,
     ifaces: Vec<LocalInterface>,
@@ -106,7 +106,7 @@ pub struct InterfaceManager {
 impl InterfaceManager {
     pub fn new(rx_cap: usize) -> Self {
         let (rx_send, rx_recv) = InterfaceChannel::make_rx_channel(rx_cap);
-        let rx_recv = Arc::new(tokio::sync::Mutex::new(rx_recv));
+        let rx_recv = Some(rx_recv);
 
         Self {
             counter: 0,
@@ -144,7 +144,7 @@ impl InterfaceManager {
     }
 
     pub fn new_context<T: Interface>(&mut self, inner: T) -> InterfaceContext<T> {
-        let channel = self.new_channel(1);
+        let channel = self.new_channel(64);
 
         let inner = Arc::new(Mutex::new(inner));
 
@@ -171,30 +171,33 @@ impl InterfaceManager {
         address
     }
 
-    pub fn receiver(&self) -> Arc<tokio::sync::Mutex<InterfaceRxReceiver>> {
-        self.rx_recv.clone()
+    pub fn receiver(&mut self) -> InterfaceRxReceiver {
+        self.rx_recv.take().expect("receiver already taken")
     }
 
     pub fn cleanup(&mut self) {
         self.ifaces.retain(|iface| !iface.stop.is_cancelled());
     }
 
-    pub async fn send(&self, message: TxMessage) {
+    pub fn send(&self, message: TxMessage) {
+        // no longer async
         for iface in &self.ifaces {
             let should_send = match message.tx_type {
-                TxMessageType::Broadcast(address) => {
-                    let mut should_send = true;
-                    if let Some(address) = address {
-                        should_send = address != iface.address;
-                    }
-
-                    should_send
+                TxMessageType::Broadcast(address) => match address {
+                    Some(address) => address != iface.address,
+                    None => true,
                 },
                 TxMessageType::Direct(address) => address == iface.address,
             };
 
             if should_send && !iface.stop.is_cancelled() {
-                let _ = iface.tx_send.send(message.clone()).await;
+                if let Err(e) = iface.tx_send.try_send(message) {
+                    log::warn!(
+                        "iface {}: tx channel full, dropping packet: {}",
+                        iface.address,
+                        e
+                    );
+                }
             }
         }
     }
