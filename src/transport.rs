@@ -105,6 +105,7 @@ pub struct TransportConfig {
 
 #[derive(Clone)]
 pub struct AnnounceEvent {
+    pub packet: Packet,
     pub destination: Arc<Mutex<SingleOutputDestination>>,
     pub app_data: PacketDataBuffer,
 }
@@ -821,6 +822,7 @@ async fn handle_announce<'a>(
         }
 
         let _ = handler.announce_tx.send(AnnounceEvent {
+            packet: *packet,
             destination,
             app_data: PacketDataBuffer::new_from_slice(&app_data),
         });
